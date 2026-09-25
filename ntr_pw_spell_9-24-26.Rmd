@@ -1,0 +1,2070 @@
+---
+title: "ntr_pw_spell_8-7-26"
+output: html_document
+date: "2026-08-07"
+---
+
+```{r}
+library(openxlsx)
+library(readxl)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(stringr)
+library(stringi)
+library(ggplot2)
+library(lme4)
+library(lmerTest)
+library(corrplot)
+library(ggcorrplot)
+library(patchwork)
+
+# Toolkit data
+load("~/Downloads/Toolkit_v2.0.RData")
+source("~/Downloads/Transcription_Converter.R")
+
+# Transcriptions
+transcriptions <- read_excel(
+  "~/Documents/ntr_pw_spell_data.xlsx", sheet = "Trans_exc_up") %>% mutate(across(where(is.character), ~ .x %>% str_to_lower() %>% str_replace_all("\\s+", ""))) %>%
+  mutate(inhouse = map_chr(pronunciation, ipa_to_inhouse), .after = pronunciation) %>%
+  mutate(length = str_length(inhouse), .after = inhouse)
+
+transcriptions_long <- transcriptions %>% pivot_longer(cols = -c(target_spelling, pronunciation, inhouse, length), names_to = "ID", values_to = "spelling_response")
+
+# Read demographics sheet
+demographics <- read_excel("~/Documents/ntr_pw_spell_data.xlsx", sheet = "Demographics")
+
+transcriptions_long <- transcriptions_long %>%
+  left_join(demographics, by = "ID")
+```
+
+```{r run participant responses through toolkit}
+# filter excluded/blank trials
+transcriptions_map <- transcriptions_long %>% filter(!is.na(spelling_response), spelling_response != "", !is.na(inhouse), inhouse != "")
+
+# get toolkit pg and or probabilities of responses
+trans_pg_prob_sum <- summarize_words(map_value(transcriptions_map$spelling_response, transcriptions_map$inhouse, "PG", all_tables_PG), "PG")
+trans_or_prob_sum <- summarize_words(map_value(transcriptions_map$spelling_response, transcriptions_map$inhouse, "OR", all_tables_OR), "PG")
+
+# get toolkit pg and or frequencies of responses
+trans_pg_freq_sum <- summarize_words(map_value(transcriptions_map$spelling_response, transcriptions_map$inhouse, "PG", all_tables_PG_freq), "PG_freq")
+trans_or_freq_sum <- summarize_words(map_value(transcriptions_map$spelling_response, transcriptions_map$inhouse, "OR", all_tables_OR_freq), "PG_freq")
+
+# append results back to original long transcription dataframe
+add_summary <- function(data, summary_df, prefix) {
+  
+  summary_unique <- summary_df %>%
+    dplyr::select(spelling, pronunciation, mean, min) %>%
+    dplyr::distinct(spelling, pronunciation, .keep_all = TRUE) %>%
+    dplyr::rename(
+      !!paste0(prefix, "_mean") := mean,
+      !!paste0(prefix, "_min") := min
+    )
+  
+  data %>%
+    dplyr::left_join(
+      summary_unique,
+      by = c(
+        "spelling_response" = "spelling",
+        "inhouse" = "pronunciation"
+      ),
+      relationship = "many-to-one"
+    )
+}
+
+transcriptions_long <- transcriptions_long %>%
+  add_summary(trans_pg_prob_sum, "pg_prob") %>%
+  add_summary(trans_or_prob_sum, "or_prob") %>%
+  add_summary(trans_pg_freq_sum, "pg_freq") %>%
+  add_summary(trans_or_freq_sum, "or_freq")
+```
+
+```{r get # of legal spellings}
+# load old toolkit until new pw spell function is updated
+load("~/Downloads/Toolkit_v2.0.RData")
+
+# get unique prons in stimuli
+prons <- unique(transcriptions_long$inhouse)
+
+# run functions
+max_spellings_pg <- pw_spell(prons, level = "PG", tables = all_tables_PG, minimum = 0, param = "pg")
+
+max_spellings_or <- pw_spell(prons, level = "OR", tables = all_tables_OR, minimum = 0, param = "pg")
+
+pron_lookup <- tibble(
+  pronunciation = unique(transcriptions_long$pronunciation),
+  pg_n_spellings = lengths(max_spellings_pg),
+  or_n_spellings = lengths(max_spellings_or)
+)
+
+transcriptions_long <- transcriptions_long %>%
+  left_join(pron_lookup, by = "pronunciation")
+
+# plot n spellings
+plot_df_wide_nopos <- transcriptions_long %>%
+  dplyr::select(pronunciation, pg_n_spellings, or_n_spellings) %>%
+  dplyr::distinct() %>%
+  mutate(
+    pronunciation = reorder(pronunciation, pg_n_spellings)
+  )
+
+library(ggplot2)
+print(plot_nspellings <- ggplot(plot_df_wide) +
+  geom_segment(
+    aes(
+      x = pg_n_spellings_nopos,
+      xend = or_n_spellings_nopos,
+      y = pronunciation,
+      yend = pronunciation
+    ),
+    linewidth = 0.5
+  ) +
+  geom_point(
+    aes(x = pg_n_spellings_nopos, y = pronunciation, color = "PG"),
+    size = 3.5
+  ) +
+  geom_point(
+    aes(x = or_n_spellings_nopos, y = pronunciation, color = "OR"),
+    size = 3.5
+  ) +
+  scale_x_log10(labels = scales::label_comma()) +
+  labs(
+    x = "Number of Spellings Generated (Log Scale)",
+    y = "Pronunciation",
+    color = "Grain size"
+  ) +
+  theme_classic() +
+  theme(
+  axis.title.x = element_text(size = 16),
+  axis.title.y = element_text(size = 16),
+  axis.text.x = element_text(size = 14),
+  axis.text.y = element_text(size = 11),
+  legend.position = c(0.95, 0.05),
+  legend.justification = c(1, 0),
+  legend.title = element_text(size = 16),
+  legend.text = element_text(size = 14)))
+
+ggsave(filename = "plot_nspellings_nopos.png", plot = plot_nspellings_nopos, width = 6, height = 11, units = "in", dpi = 300)
+```
+
+```{r demographics table}
+participant_demo <- transcriptions_long %>%
+  dplyr::select(ID, Sex, Age, Education, WRMT_WID) %>%
+  dplyr::distinct()
+
+descriptives <- participant_demo %>%
+  group_by(Sex) %>%
+  summarise(
+    N = n(),
+    
+    age_mean = mean(Age, na.rm = TRUE),
+    age_sd = sd(Age, na.rm = TRUE),
+    
+    education_mean = mean(Education, na.rm = TRUE),
+    education_sd = sd(Education, na.rm = TRUE),
+    
+    wordid_mean = mean(WRMT_WID, na.rm = TRUE),
+    wordid_sd = sd(WRMT_WID, na.rm = TRUE)
+  )
+```
+
+```{r helper-functions}
+# Mean that returns 0 when every value in a group is NA.
+# Useful for toolkit values where NA means no legal/available spelling response.
+mean0 <- function(x) {
+  if (all(is.na(x))) 0 else mean(x, na.rm = TRUE)
+}
+
+# Standard mean helper for variables where an all-NA group should stay NA.
+mean_na <- function(x) {
+  mean(x, na.rm = TRUE)
+}
+
+skill_group <- function(x) {
+  factor(
+    dplyr::ntile(dplyr::desc(x), 3),
+    levels = c(1, 2, 3),
+    labels = c("High", "Average", "Low")
+  )
+}
+
+plot_group_colors <- c(
+  "High" = "deepskyblue",
+  "Average" = "chartreuse3",
+  "Low" = "hotpink"
+)
+```
+
+```{r determine accuracy}
+# top 1 and top 2 pg and or toolkit accuracy
+transcriptions_long1 <- transcriptions_long %>%
+  mutate(
+    pg_prob_mean = na_if(pg_prob_mean, 0),
+    or_prob_mean = na_if(or_prob_mean, 0)
+  ) %>%
+  group_by(pronunciation) %>%
+  mutate(
+    pg_rank = dense_rank(desc(pg_prob_mean)),
+    or_rank = dense_rank(desc(or_prob_mean)),
+
+    top1pg_acc  = if_else(!is.na(pg_prob_mean) & pg_rank == 1, 1L, 0L),
+    top1or_acc  = if_else(!is.na(or_prob_mean) & or_rank == 1, 1L, 0L),
+
+    top12pg_acc = if_else(!is.na(pg_prob_mean) & pg_rank <= 2, 1L, 0L),
+    top12or_acc = if_else(!is.na(or_prob_mean) & or_rank <= 2, 1L, 0L)
+  ) %>%
+  ungroup() %>%
+  select(-pg_rank, -or_rank)
+
+# legal toolkit accuracy
+transcriptions_long1 <- transcriptions_long1 %>%
+  mutate(
+    legalpg_acc = if_else(!is.na(pg_prob_mean), 1L, 0L),
+    legalor_acc = if_else(!is.na(or_prob_mean), 1L, 0L)
+  )
+
+# sample top 1, top 2, and legal accuracy
+transcriptions_long1 <- transcriptions_long1 %>%
+  group_by(pronunciation, spelling_response) %>%
+  mutate(
+    sample_nspellings = n()
+  ) %>%
+  group_by(pronunciation) %>%
+  mutate(
+    sample_prob = sample_nspellings / n(),
+    sample_rank = dense_rank(desc(sample_prob)),
+
+    top1s_acc = as.integer(sample_rank == 1),
+    top12s_acc = as.integer(sample_rank <= 2),
+
+    legal_s_acc = as.integer(sample_nspellings > 1)
+  ) %>%
+  ungroup() %>%
+  select(-sample_rank)
+```
+
+```{r compare accuracy scoring approaches}
+library(dplyr)
+library(tidyr)
+library(lme4)
+library(emmeans)
+
+df_long <- transcriptions_long1 %>%
+  dplyr::select(
+    ID,
+    pronunciation,
+    top1pg_acc,
+    top1or_acc,
+    top1s_acc,
+    top12pg_acc,
+    top12or_acc,
+    top12s_acc,
+    legalpg_acc,
+    legalor_acc,
+    legal_s_acc
+  ) %>%
+  
+  # One ID for each original participant × item response
+  mutate(
+    Response = interaction(ID, pronunciation, drop = TRUE)
+  ) %>%
+  
+  pivot_longer(
+    cols = -c(ID, pronunciation, Response),
+    names_to = "measure",
+    values_to = "accuracy"
+  ) %>%
+  
+  mutate(
+    measure_group = case_when(
+      measure %in% c(
+        "top1pg_acc",
+        "top12pg_acc",
+        "legalpg_acc"
+      ) ~ "PG Toolkit",
+
+      measure %in% c(
+        "top1or_acc",
+        "top12or_acc",
+        "legalor_acc"
+      ) ~ "OR Toolkit",
+
+      measure %in% c(
+        "top1s_acc",
+        "top12s_acc",
+        "legal_s_acc"
+      ) ~ "Sample",
+
+      TRUE ~ NA_character_
+    ),
+
+    measure_group = factor(
+      measure_group,
+      levels = c("PG Toolkit", "OR Toolkit", "Sample")
+    ),
+
+    column_label = case_when(
+      measure %in% c(
+        "top1pg_acc",
+        "top1or_acc",
+        "top1s_acc"
+      ) ~ "Top 1",
+
+      measure %in% c(
+        "top12pg_acc",
+        "top12or_acc",
+        "top12s_acc"
+      ) ~ "Top 2",
+
+      measure %in% c(
+        "legalpg_acc",
+        "legalor_acc",
+        "legal_s_acc"
+      ) ~ "Legal",
+
+      TRUE ~ NA_character_
+    ),
+
+    column_label = factor(
+      column_label,
+      levels = c("Top 1", "Top 2", "Legal")
+    )
+  )
+
+common_mod <- glmer(
+  accuracy ~ measure_group * column_label +
+    (1 | ID) +
+    (1 | pronunciation) +
+    (1 | Response),
+  family = binomial(link = "logit"),
+  data = df_long,
+  control = glmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(maxfun = 2e5)
+  )
+)
+
+scoring_emm <- emmeans(
+  common_mod,
+  ~ column_label | measure_group
+)
+
+summary(scoring_emm, type = "response")
+
+group_emm <- emmeans(
+  common_mod,
+  ~ measure_group | column_label
+)
+
+measure_contrasts <- contrast(
+  group_emm,
+  method = list(
+    "PG vs OR"     = c(1, -1, 0),
+    "PG vs Sample" = c(1, 0, -1),
+    "OR vs Sample" = c(0, 1, -1)
+  ),
+  adjust = "holm"
+)
+
+summary(
+  measure_contrasts,
+  infer = TRUE,
+  type = "response"
+)
+
+summary(common_mod)
+VarCorr(common_mod)
+isSingular(common_mod, tol = 1e-4)
+
+#interaction contrasts
+emm_all <- emmeans(
+  common_mod,
+  ~ measure_group * column_label)
+
+definition_changes <- contrast(
+  emm_all,
+  interaction = list(
+    column_label = list(
+      "Top 1 to Top 2" = c(-1, 1, 0),
+      "Top 1 to Legal" = c(-1, 0, 1),
+      "Top 2 to Legal" = c(0, -1, 1)
+    ),
+    measure_group = list(
+      "PG vs OR"     = c(1, -1, 0),
+      "PG vs Sample" = c(1, 0, -1),
+      "OR vs Sample" = c(0, 1, -1)
+    )
+  ),
+  adjust = "holm"
+)
+
+summary(
+  definition_changes,
+  infer = TRUE,
+  adjust = "holm"
+)
+```
+
+```{r plot comparison of scoring approaches}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+
+# Step 1: Calculate proportion correct/incorrect for each measure
+proportion_summary <- transcriptions_long1 %>%
+  dplyr::select(
+    top1pg_acc,
+    top1or_acc,
+    top1s_acc,
+    top12pg_acc,
+    top12or_acc,
+    top12s_acc,
+    legalpg_acc,
+    legalor_acc,
+    legal_s_acc
+  ) %>%
+  summarise(
+    across(
+      everything(),
+      ~ mean(. == 1, na.rm = TRUE)
+    )
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "column",
+    values_to = "proportion_ones"
+  ) %>%
+  mutate(
+    proportion_zeros = 1 - proportion_ones
+  )
+
+# Step 2: Reshape correct/incorrect into rows
+proportion_summary_long <- proportion_summary %>%
+  pivot_longer(
+    cols = c(proportion_ones, proportion_zeros),
+    names_to = "value_type",
+    values_to = "proportion"
+  ) %>%
+  mutate(
+    value_type = recode(
+      value_type,
+      proportion_ones = "Correct",
+      proportion_zeros = "Incorrect"
+    ),
+    value_type = factor(
+      value_type,
+      levels = c("Incorrect", "Correct")
+    )
+  )
+
+# Step 3: Add measure group and scoring-definition labels
+proportion_summary_long <- proportion_summary_long %>%
+  mutate(
+    measure_group = case_when(
+      column %in% c(
+        "top1pg_acc",
+        "top12pg_acc",
+        "legalpg_acc"
+      ) ~ "PG Toolkit",
+
+      column %in% c(
+        "top1or_acc",
+        "top12or_acc",
+        "legalor_acc"
+      ) ~ "OR Toolkit",
+
+      column %in% c(
+        "top1s_acc",
+        "top12s_acc",
+        "legal_s_acc"
+      ) ~ "Sample",
+
+      TRUE ~ NA_character_
+    ),
+
+    measure_group = factor(
+      measure_group,
+      levels = c("PG Toolkit", "OR Toolkit", "Sample")
+    ),
+
+    column_label = case_when(
+      column %in% c(
+        "top1pg_acc",
+        "top1or_acc",
+        "top1s_acc"
+      ) ~ "Top 1",
+
+      column %in% c(
+        "top12pg_acc",
+        "top12or_acc",
+        "top12s_acc"
+      ) ~ "Top 2",
+
+      column %in% c(
+        "legalpg_acc",
+        "legalor_acc",
+        "legal_s_acc"
+      ) ~ "Legal",
+
+      TRUE ~ NA_character_
+    ),
+
+    column_label = factor(
+      column_label,
+      levels = c("Top 1", "Top 2", "Legal")
+    )
+  )
+
+# Step 4: Plot
+plot_acc <- ggplot(
+  proportion_summary_long,
+  aes(
+    x = column_label,
+    y = proportion,
+    fill = value_type
+  )
+) +
+  geom_bar(
+    stat = "identity",
+    position = "stack",
+    alpha = 0.8
+  ) +
+  labs(
+    title = "Proportion of Spelling Accuracy by Measure",
+    x = "Accuracy Threshold",
+    y = "Proportion of Spelling Accuracy",
+    fill = "Accuracy"
+  ) +
+  scale_fill_manual(
+    values = c("hotpink", "chartreuse3")
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    labels = scales::percent_format(accuracy = 1)
+  ) +
+  facet_grid(
+    . ~ measure_group,
+    scales = "free_x",
+    space = "free"
+  ) +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      size = 16
+    ),
+    axis.text.y = element_text(size = 16),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 16),
+    plot.title = element_text(
+      size = 20,
+      hjust = 0.5,
+      face = "bold"
+    ),
+    legend.title = element_text(size = 16),
+    legend.text = element_text(size = 16),
+    strip.text.x = element_text(
+      size = 16,
+      face = "bold"
+    )
+  ) +
+  geom_text(
+    data = subset(
+      proportion_summary_long,
+      value_type == "Correct"
+    ),
+    aes(
+      label = scales::percent(
+        proportion,
+        accuracy = 0.1
+      )
+    ),
+    vjust = -0.5,
+    color = "black",
+    size = 5
+  )
+
+print(plot_acc)
+
+ggsave(
+  "plot_acc.png",
+  plot = plot_acc,
+  width = 10,
+  height = 5,
+  dpi = 300
+)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+# Calculate the average for each subject
+df_avg <- transcriptions_long1 %>%
+  group_by(ID) %>%
+  summarise(
+    age = mean(Age, na.rm = TRUE),
+    education = mean(Education, na.rm = TRUE),
+    WRMT_BSC = mean(WRMT_BSC, na.rm = TRUE),
+    WRMT_WID = mean(WRMT_WID, na.rm = TRUE),
+    WRMT_WA = mean(WRMT_WA, na.rm = TRUE),
+    WJTA_SPELL = mean(WJTA_SPELL, na.rm = TRUE),
+    length_avg = mean(length, na.rm = TRUE),
+    sample_prob_avg = mean(sample_prob, na.rm = TRUE),
+    pg_prob_min_avg = mean(pg_prob_min, na.rm = TRUE),
+    or_prob_min_avg = mean(or_prob_min, na.rm = TRUE),
+    pg_freq_min_avg = mean(pg_freq_min, na.rm = TRUE),
+    or_freq_min_avg = mean(or_freq_min, na.rm = TRUE),
+    pg_prob_mean_avg = mean(pg_prob_mean, na.rm = TRUE),
+    or_prob_mean_avg = mean(or_prob_mean, na.rm = TRUE),
+    pg_freq_mean_avg = mean(pg_freq_mean, na.rm = TRUE),
+    or_freq_mean_avg = mean(or_freq_mean, na.rm = TRUE),
+    pgtop1t_acc_avg = mean(top1pg_acc, na.rm = TRUE),
+    pgtop12t_acc_avg = mean(top12pg_acc, na.rm = TRUE),
+    ortop1t_acc_avg = mean(top1or_acc, na.rm = TRUE),
+    ortop12t_acc_avg = mean(top12or_acc, na.rm = TRUE),
+    top1s_acc_avg = mean(top1s_acc, na.rm = TRUE),
+    top12s_acc_avg = mean(top12s_acc, na.rm = TRUE),
+    pglegal_acc_avg = mean(legalpg_acc, na.rm = TRUE),
+    orlegal_acc_avg = mean(legalor_acc, na.rm = TRUE),
+    legal_s_acc_avg = mean(legal_s_acc, na.rm = TRUE))
+
+df_avg <- df_avg %>%
+  mutate(WID_group = ntile(desc(WRMT_WID), 3))
+
+# Calculate the average for each subject with zero coding
+transcriptions_long_zero <- transcriptions_long1 %>%
+  dplyr::mutate(
+    dplyr::across(
+      c(pg_prob_mean, or_prob_mean, pg_freq_mean, or_freq_mean, pg_prob_min, or_prob_min, pg_freq_min, or_freq_min),
+      ~ tidyr::replace_na(.x, 0)
+    )
+  )
+
+df_avg_zero <- transcriptions_long_zero %>%
+  group_by(ID) %>%
+  summarise(
+    age = mean(Age, na.rm = TRUE),
+    education = mean(Education, na.rm = TRUE),
+    WRMT_BSC = mean(WRMT_BSC, na.rm = TRUE),
+    WRMT_WID = mean(WRMT_WID, na.rm = TRUE),
+    WRMT_WA = mean(WRMT_WA, na.rm = TRUE),
+    WJTA_SPELL = mean(WJTA_SPELL, na.rm = TRUE),
+    length_avg = mean(length, na.rm = TRUE),
+    sample_prob_avg = mean(sample_prob, na.rm = TRUE),
+    pg_prob_min_avg = mean(pg_prob_min, na.rm = TRUE),
+    or_prob_min_avg = mean(or_prob_min, na.rm = TRUE),
+    pg_freq_min_avg = mean(pg_freq_min, na.rm = TRUE),
+    or_freq_min_avg = mean(or_freq_min, na.rm = TRUE),
+    pg_prob_mean_avg = mean(pg_prob_mean, na.rm = TRUE),
+    or_prob_mean_avg = mean(or_prob_mean, na.rm = TRUE),
+    pg_freq_mean_avg = mean(pg_freq_mean, na.rm = TRUE),
+    or_freq_mean_avg = mean(or_freq_mean, na.rm = TRUE),
+    pgtop1t_acc_avg = mean(top1pg_acc, na.rm = TRUE),
+    pgtop12t_acc_avg = mean(top12pg_acc, na.rm = TRUE),
+    ortop1t_acc_avg = mean(top1or_acc, na.rm = TRUE),
+    ortop12t_acc_avg = mean(top12or_acc, na.rm = TRUE),
+    top1s_acc_avg = mean(top1s_acc, na.rm = TRUE),
+    top12s_acc_avg = mean(top12s_acc, na.rm = TRUE),
+    pglegal_acc_avg = mean(legalpg_acc, na.rm = TRUE),
+    orlegal_acc_avg = mean(legalor_acc, na.rm = TRUE),
+    legal_s_acc_avg = mean(legal_s_acc, na.rm = TRUE))
+
+df_avg_zero <- df_avg_zero %>%
+  mutate(WID_group = ntile(desc(WRMT_WID), 3))
+
+# -----------------------
+df_avg_ex <- df_avg %>%
+  filter(!ID %in% c("NTR0265", "NTR0427"))
+
+# -----------------------
+# Prepare PG toolkit data
+df_pgtoolkit_long <- df_avg %>%
+  dplyr::select(WID_group, WRMT_WID, pgtop1t_acc_avg, pgtop12t_acc_avg, pglegal_pos_t_acc_avg) %>%
+  pivot_longer(
+    cols = c(pgtop1t_acc_avg, pgtop12t_acc_avg, pglegal_pos_t_acc_avg),
+    names_to = "Accuracy_Type",
+    values_to = "Accuracy"
+  ) %>%
+  mutate(
+    Accuracy_Type = factor(Accuracy_Type,
+                                levels = c("pgtop1t_acc_avg", "pgtop12t_acc_avg", "pglegal_pos_t_acc_avg"),
+                                labels = c("Top 1", "Top 2", "Legal"))
+  ) %>%
+  filter(!is.na(WID_group)) %>%
+  mutate(WRMT_WID_c = WRMT_WID - mean(WRMT_WID, na.rm = TRUE))
+
+# Compute correlation labels for reading
+cor_toolkit <- df_pgtoolkit_long %>%
+  group_by(WID_group, Accuracy_Type) %>%
+  summarise(
+    cor_val = cor(WRMT_WID, Accuracy, use = "complete.obs"),
+    p_val   = cor.test(WRMT_WID, Accuracy)$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    label = paste0("R = ", round(cor_val, 2), "\n", "p = ", signif(p_val, 2))
+  )
+
+# Plot reading accuracy without R/p
+plot_pgtoolkit <- ggplot(df_pgtoolkit_long, aes(x = WRMT_WID_c + mean(df_pgtoolkit_long$WRMT_WID, na.rm = TRUE),
+                                      y = Accuracy,
+                                      color = factor(WID_group))) +
+  geom_jitter(width = 0.3, alpha = 0.6) +
+  geom_smooth(
+    data = df_pgtoolkit_long %>% filter(Accuracy_Type %in% c("Top 1", "Top 2", "Legal")),
+    method = "lm", formula = y ~ x, color = "gray50"
+  ) +
+  facet_wrap(~ Accuracy_Type) +
+  labs(
+    x = "Word ID Score",
+    y = "Proportion of Correct Responses",
+    title = "Toolkit PG Spelling Accuracy Across Reading Skill",
+    color = "Reading Skill Group"
+  ) +
+  scale_y_continuous(limits = c(0,1),
+                     labels = scales::percent_format(accuracy = 1)) +
+  scale_color_manual(
+    values = c("1" = "deepskyblue", "2" = "chartreuse3", "3" = "hotpink"),
+    labels = c("1" = "High", "2" = "Average", "3" = "Low")
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    strip.text = element_text(size = 13),
+    legend.text = element_text(size = 14),
+    legend.key.size = unit(1.5, "lines")
+  )
+
+print(plot_pgtoolkit)
+
+# -----------------------
+# Prepare PG toolkit data
+df_ortoolkit_long <- df_avg_ex %>%
+  dplyr::select(WID_group, WRMT_WID, ortop1t_acc_avg, ortop12t_acc_avg, orlegal_pos_t_acc_avg) %>%
+  pivot_longer(
+    cols = c(ortop1t_acc_avg, ortop12t_acc_avg, orlegal_pos_t_acc_avg),
+    names_to = "Accuracy_Type",
+    values_to = "Accuracy"
+  ) %>%
+  dplyr::mutate(
+    Accuracy_Type = factor(Accuracy_Type,
+                                levels = c("ortop1t_acc_avg", "ortop12t_acc_avg", "orlegal_pos_t_acc_avg"),
+                                labels = c("Top 1", "Top 2", "Legal"))
+  ) %>%
+  filter(!is.na(WID_group)) %>%
+  mutate(WRMT_WID_c = WRMT_WID - mean(WRMT_WID, na.rm = TRUE))
+
+# Compute correlation labels for reading
+cor_toolkit <- df_ortoolkit_long %>%
+  group_by(WID_group, Accuracy_Type) %>%
+  summarise(
+    cor_val = cor(WRMT_WID, Accuracy, use = "complete.obs"),
+    p_val   = cor.test(WRMT_WID, Accuracy)$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    label = paste0("R = ", round(cor_val, 2), "\n", "p = ", signif(p_val, 2))
+  )
+
+# Plot reading accuracy without R/p
+plot_ortoolkit <- ggplot(df_ortoolkit_long, aes(x = WRMT_WID_c + mean(df_ortoolkit_long$WRMT_WID, na.rm = TRUE),
+                                      y = Accuracy,
+                                      color = factor(WID_group))) +
+  geom_jitter(width = 0.3, alpha = 0.6) +
+  geom_smooth(
+    data = df_ortoolkit_long %>% filter(Accuracy_Type %in% c("Top 1", "Top 2", "Legal")),
+    method = "lm", formula = y ~ x, color = "gray50"
+  ) +
+  facet_wrap(~ Accuracy_Type) +
+  labs(
+    x = "Word ID Score",
+    y = "Proportion of Correct Responses",
+    title = "Toolkit OR Spelling Accuracy Across Reading Skill",
+    color = "Reading Skill Group"
+  ) +
+  scale_y_continuous(limits = c(0,1),
+                     labels = scales::percent_format(accuracy = 1)) +
+  scale_color_manual(
+    values = c("1" = "deepskyblue", "2" = "chartreuse3", "3" = "hotpink"),
+    labels = c("1" = "High", "2" = "Average", "3" = "Low")
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    strip.text = element_text(size = 13),
+    legend.text = element_text(size = 14),
+    legend.key.size = unit(1.5, "lines")
+  )
+
+print(plot_ortoolkit)
+
+# -----------------------
+# Prepare spelling data
+df_sample_long <- df_avg_ex %>%
+  dplyr::select(WID_group, WRMT_WID, top1s_acc_avg, top12s_acc_avg, legal_s_acc_avg) %>%
+  pivot_longer(
+    cols = c(top1s_acc_avg, top12s_acc_avg, legal_s_acc_avg),
+    names_to = "Accuracy_Type",
+    values_to = "Accuracy"
+  ) %>%
+  mutate(
+    Accuracy_Type = factor(Accuracy_Type,
+                                levels = c("top1s_acc_avg", "top12s_acc_avg", "legal_s_acc_avg"),
+                                labels = c("Top 1", "Top 2", "Legal"))
+  ) %>%
+  filter(!is.na(WID_group)) %>%
+  mutate(WRMT_WID_c = WRMT_WID - mean(WRMT_WID, na.rm = TRUE))
+
+# -----------------------
+# Plot spelling accuracy without R/p
+plot_sample <- ggplot(df_sample_long, aes(x = WRMT_WID_c + mean(df_sample_long$WRMT_WID, na.rm = TRUE),
+                                        y = Accuracy,
+                                        color = factor(WID_group))) +
+  geom_jitter(width = 0.3, alpha = 0.6) +
+  geom_smooth(
+    data = df_sample_long %>% filter(Accuracy_Type %in% c("Top 1", "Top 2", "Legal")),
+    method = "lm", formula = y ~ x, color = "gray50"
+  ) +
+  facet_wrap(~ Accuracy_Type) +
+  labs(
+    x = "Word ID Score",
+    y = "Proportion of Correct Responses",
+    title = "Sample-Based Spelling Accuracy Across Reading Skill",
+    color = "Reading Skill Group"
+  ) +
+  scale_y_continuous(limits = c(0,1),
+    labels = scales::percent_format(accuracy = 1)) +
+  scale_color_manual(
+    values = c("1" = "deepskyblue", "2" = "chartreuse3", "3" = "hotpink"),
+    labels = c("1" = "High", "2" = "Average", "3" = "Low")
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    strip.text = element_text(size = 13),
+    legend.text = element_text(size = 14),
+    legend.key.size = unit(1.5, "lines")
+  )
+
+print(plot_sample)
+
+# In RStudio or script
+#ggsave("plot_pgtoolkit.png", plot = plot_pgtoolkit, width = 10, height = 5, dpi = 300)
+#ggsave("plot_ortoolkit.png", plot = plot_ortoolkit, width = 10, height = 5, dpi = 300)
+#ggsave("plot_sample.png", plot = plot_sample, width = 10, height = 5, dpi = 300)
+
+library(patchwork)
+
+# Stack the three plots vertically
+combined_plot <- plot_pgtoolkit / plot_ortoolkit / plot_sample +
+  plot_layout(guides = "collect") & theme(legend.position = "bottom")
+
+# Save once
+#ggsave("combined_plots.png", plot = combined_plot, width = 10, height = 12, dpi = 300)
+```
+
+
+```{r how does literacy skill predict spelling accuracy variously defined?}
+transcriptions_long1_z <- transcriptions_long1 %>%
+  mutate(
+    WRMT_WID_z = scale(WRMT_WID)[, 1],
+    WRMT_WA_z = scale(WRMT_WA)[, 1],
+    WJTA_Spelling_Raw_z = scale(WJTA_SPELL)[, 1],
+    Age_z = scale(Age)[, 1],
+    Education_z = scale(Education)[, 1],
+    Length_z = scale(length)[, 1])
+
+library(lme4)
+
+summary(pgtop1z <- glmer(top1pg_acc ~ WRMT_WID_z + WRMT_WA_z + WJTA_Spelling_Raw_z + Age_z + Education_z + Length_z + (1 | pronunciation) + (1 | ID), data = transcriptions_long1_z, family = binomial))
+
+summary(ortop1z <- glmer(top1or_acc ~ WRMT_WID_z + WRMT_WA_z + WJTA_Spelling_Raw_z + Age_z + Education_z + Length_z + (1 | pronunciation) + (1 | ID), data = transcriptions_long1_z, family = binomial))
+
+summary(top1sz <- glmer(top1s_acc ~ WRMT_WID_z + WRMT_WA_z + WJTA_Spelling_Raw_z + Age_z + Education_z + Length_z + (1 | pronunciation) + (1 | ID), data = transcriptions_long1_z, family = binomial))
+
+summary(pgtop12z <- glmer(top12pg_acc ~ WRMT_WID_z + WRMT_WA_z + WJTA_Spelling_Raw_z + Age_z + Education_z + Length_z + (1 | pronunciation) + (1 | ID), data = transcriptions_long1_z, family = binomial))
+
+summary(ortop12z <- glmer(top12or_acc ~ WRMT_WID_z + WRMT_WA_z + WJTA_Spelling_Raw_z + Age_z + Education_z + Length_z + (1 | pronunciation) + (1 | ID), data = transcriptions_long1_z, family = binomial))
+
+summary(top12sz <- glmer(top12s_acc ~ WRMT_WID_z + WRMT_WA_z + WJTA_Spelling_Raw_z + Age_z + Education_z + Length_z + (1 | pronunciation) + (1 | ID), data = transcriptions_long1_z, family = binomial))
+
+summary(pglegalz <- glmer(legalpg_acc ~ WRMT_WID_z + WRMT_WA_z + WJTA_Spelling_Raw_z + Age_z + Education_z + Length_z + (1 | pronunciation) + (1 | ID), data = transcriptions_long1_z, family = binomial))
+
+summary(orlegalz <- glmer(legalor_acc ~ WRMT_WID_z + WRMT_WA_z + WJTA_Spelling_Raw_z + Age_z + Education_z + Length_z + (1 | pronunciation) + (1 | ID), data = transcriptions_long1_z, family = binomial))
+
+summary(legal_sz <- glmer(legal_s_acc ~ WRMT_WID_z + WRMT_WA_z + WJTA_Spelling_Raw_z + Age_z + Education_z + Length_z + (1 | pronunciation) + (1 | ID), data = transcriptions_long1_z, family = binomial))
+
+# fdr correction
+models <- list(
+  PG_Top1     = pgtop1z,
+  OR_Top1     = ortop1z,
+  Sample_Top1 = top1sz,
+  PG_Top2     = pgtop12z,
+  OR_Top2     = ortop12z,
+  Sample_Top2 = top12sz,
+  PG_Legal    = pglegalz,
+  OR_Legal    = orlegalz,
+  Sample_Legal = legal_sz
+)
+
+predictors <- c("WRMT_WID_z", "WRMT_WA_z", "WJTA_Spelling_Raw_z", "Age_z", "Education_z", "Length_z")
+
+p_table <- map_dfr(
+  names(models),
+  function(model_name) {
+    
+    coef_table <- summary(models[[model_name]])$coefficients
+    
+    tibble(
+      model = model_name,
+      predictor = predictors,
+      p = coef_table[predictors, "Pr(>|z|)"]
+    )
+  }
+)
+
+print(p_table <- p_table %>%
+  group_by(predictor) %>%
+  mutate(
+    q = p.adjust(p, method = "fdr")
+  ) %>%
+  ungroup())
+
+library(performance)
+
+models <- list(
+  "PG Top 1" = pgtop1z,
+  "OR Top 1" = ortop1z,
+  "Sample Top 1" = top1sz,
+  "PG Top 2" = pgtop12z,
+  "OR Top 2" = ortop12z,
+  "Sample Top 2" = top12sz,
+  "PG Legal" = pglegalz,
+  "OR Legal" = orlegalz,
+  "Sample Legal" = legal_sz
+)
+
+lapply(models, r2)
+
+print(r2_table <- data.frame(
+  Model = names(models),
+  Marginal_R2 = sapply(
+    models,
+    function(m) r2(m)$R2_marginal
+  ),
+  Conditional_R2 = sapply(
+    models,
+    function(m) r2(m)$R2_conditional
+  )))
+```
+
+===========entropy/idiosyncracy===========
+```{r predict entropy from reading group}
+calculate_entropy <- function(counts) {
+  probabilities <- counts / sum(counts)
+  -sum(probabilities * log(probabilities, base = 2))
+}
+
+calculate_entropy <- function(counts) {
+  p <- counts / sum(counts)
+  -sum(p * log2(p))
+}
+
+# Add reading-skill group and pronunciation count
+wid_groups <- transcriptions_long1 %>%
+  distinct(ID, WRMT_WID) %>%
+  mutate(
+    WID_group = factor(
+      ntile(desc(WRMT_WID), 3),
+      levels = c(1, 2, 3),
+      labels = c("High", "Average", "Low")))
+
+transcriptions_long2 <- transcriptions_long1 %>%
+  select(-any_of("WID_group")) %>%
+  left_join(wid_groups, by = c("ID", "WRMT_WID"))
+
+# Calculate spelling entropy by pronunciation and reading group
+df_entropy <- transcriptions_long2 %>%
+  filter(
+    !is.na(WID_group),
+    !is.na(pronunciation),
+    !is.na(spelling_response)
+  ) %>%
+  count(WID_group, pronunciation, spelling_response, name = "spelling_count") %>%
+  group_by(WID_group, pronunciation) %>%
+  summarise(
+    spelling_entropy = calculate_entropy(spelling_count),
+    length = nchar(first(pronunciation)),
+    n_trials = sum(spelling_count),
+    .groups = "drop")
+
+# Add entropy back to trial-level data
+transcriptions_long2 <- transcriptions_long2 %>%
+  left_join(df_entropy %>%
+      select(WID_group, pronunciation, spelling_entropy), by = c("WID_group", "pronunciation"))
+
+# Mixed-effects model
+summary(entropy_lm <- lmer(spelling_entropy ~ WID_group + length + (1 | pronunciation), data = df_entropy))
+
+anova(entropy_lm)
+
+library(emmeans)
+emmeans(entropy_lm, pairwise ~ WID_group, adjust = "tukey")
+
+# Plot-ready dataset
+df_mean_entropy <- df_entropy %>% filter(!is.na(spelling_entropy)) %>%
+  mutate(pronunciation = reorder(pronunciation, spelling_entropy))
+
+print(plot_entropy <- ggplot(df_mean_entropy,
+  aes(x = pronunciation, y = spelling_entropy, color = WID_group)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_smooth(
+    aes(group = WID_group),
+    method = "lm",
+    se = FALSE) +
+  scale_color_manual(values = plot_group_colors) +
+  labs(
+    title = "Mean Spelling Entropy for Each Item by Reading Group",
+    x = "Pseudoword Item",
+    y = "Mean Spelling Entropy",
+    color = "Group") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      size = 20,
+      face = "bold"),
+    legend.position = c(0.98, 0.30),
+    legend.justification = c(1, 1),
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12),
+    axis.text.y = element_text(size = 16),
+    axis.title = element_text(size = 16)))
+
+ggsave("plot_entropy.png", plot = plot_entropy, width = 12, height = 5, dpi = 300)
+```
+
+```{r predict idiosyncratic responses from reading group}
+# Idiosyncratic trial flag:
+# spelling occurs only once for a given pronunciation across the full sample
+transcriptions_long2_idio <- transcriptions_long2 %>%
+  filter(!is.na(pronunciation), !is.na(spelling_response)) %>%
+  add_count(pronunciation, spelling_response, name = "n_in_sample") %>%
+  mutate(
+    idiosyncratic_trial = n_in_sample == 1,
+    WID_group = factor(
+      WID_group,
+      levels = c("High", "Average", "Low")))
+
+# Participant-level idiosyncratic counts/rates
+idio_by_participant2 <- transcriptions_long2_idio %>%
+  filter(!is.na(WID_group)) %>%
+  group_by(ID, WID_group) %>%
+  summarise(
+    n_trials = n(),
+    n_idiosyncratic_trials = sum(idiosyncratic_trial),
+    prop_idiosyncratic = mean(idiosyncratic_trial),
+    .groups = "drop")
+
+# Item-level idiosyncratic counts for plotting
+df_idio_item2 <- transcriptions_long2_idio %>%
+  filter(!is.na(WID_group)) %>%
+  group_by(WID_group, pronunciation) %>%
+  summarise(
+    n_idio = sum(idiosyncratic_trial),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pronunciation = reorder(
+      pronunciation,
+      n_idio,
+      FUN = mean
+    ),
+    WID_group = factor(
+      WID_group,
+      levels = c("Low", "Average", "High")
+    )
+  )
+
+# Unique spelling counts by pronunciation × reading group
+unique_spellings_by_pron_group2 <- transcriptions_long2 %>%
+  filter(
+    !is.na(pronunciation),
+    !is.na(WID_group),
+    !is.na(spelling_response)
+  ) %>%
+  group_by(pronunciation, WID_group) %>%
+  summarise(
+    n_unique_spellings = n_distinct(spelling_response),
+    length = nchar(first(pronunciation)),
+    n_trials = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pronunciation = reorder(
+      pronunciation,
+      n_unique_spellings,
+      FUN = mean
+    ),
+    WID_group = factor(
+      WID_group,
+      levels = c("Low", "Average", "High")))
+
+# Poisson mixed-effects model
+summary(idio_lm <- glmer(n_unique_spellings ~ WID_group + offset(log(n_trials)) + length + (1 | pronunciation), family = poisson, data = unique_spellings_by_pron_group2))
+
+drop1(idio_lm, test = "Chisq")
+
+emmeans(idio_lm, pairwise ~ WID_group, adjust = "tukey")
+
+print(plot_unique <- ggplot(
+  unique_spellings_by_pron_group2,
+  aes(x = pronunciation, y = n_unique_spellings, color = WID_group)
+) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE, aes(group = WID_group), linetype = "solid") +
+  scale_color_manual(values = plot_group_colors) +
+  labs(
+    title = "Number of Idiosyncratic Spellings for Each Item by Reading Group",
+    x = "Pseudoword Item",
+    y = "Number of Idiosyncratic Spellings",
+    color = "Group"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 20, face = "bold"),
+    legend.position = c(0.20, 0.90),
+    legend.justification = c(1, 1),
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 16),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 16)
+  ))
+
+library(patchwork)
+
+print(combined_plot <- plot_entropy / plot_unique +
+  plot_layout(heights = c(1, 1)))  # adjust if you want one plot taller
+
+ggsave("combined_entropy_idio.png",
+       plot = combined_plot,
+       width = 12, height = 10, dpi = 300)
+```
+
+
+===========sublexical toolkit===========
+```{r predict mean sublexical measure from Word ID for legal responses}
+library(lme4)
+summary(pg_prob_legal <- lmer(pg_prob_mean ~ Age + Education + length + WRMT_WID + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+summary(or_prob_legal <- lmer(or_prob_mean ~ Age + Education + length + WRMT_WID + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+summary(pg_freq_legal <- lmer(pg_freq_mean ~ Age + Education + length + WRMT_WID + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+summary(or_freq_legal <- lmer(or_freq_mean ~ Age + Education + length + WRMT_WID + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+library(parameters)
+standardize_parameters(pg_prob_legal)
+standardize_parameters(pg_freq_legal)
+standardize_parameters(or_prob_legal)
+standardize_parameters(or_freq_legal)
+
+library(performance)
+r2_nakagawa(pg_prob_legal)
+r2_nakagawa(pg_freq_legal)
+r2_nakagawa(or_prob_legal)
+r2_nakagawa(or_freq_legal)
+
+p.adjust(p_vals <- c(
+  summary(pg_prob_legal)$coefficients["WRMT_WID", "Pr(>|t|)"],
+  summary(pg_freq_legal)$coefficients["WRMT_WID", "Pr(>|t|)"],
+  summary(or_prob_legal)$coefficients["WRMT_WID", "Pr(>|t|)"],
+  summary(or_freq_legal)$coefficients["WRMT_WID", "Pr(>|t|)"]
+), method = "fdr")
+
+p.adjust(p_vals <- c(
+  summary(pg_prob_legal)$coefficients["length", "Pr(>|t|)"],
+  summary(pg_freq_legal)$coefficients["length", "Pr(>|t|)"],
+  summary(or_prob_legal)$coefficients["length", "Pr(>|t|)"],
+  summary(or_freq_legal)$coefficients["length", "Pr(>|t|)"]
+), method = "fdr")
+```
+
+```{r predict mean sublexical measure from Word ID illegal = 0}
+library(lme4)
+
+# set NAs to zero
+transcriptions_long1_zero <- transcriptions_long1 %>% mutate(
+    across(c(pg_prob_mean, or_prob_mean, pg_freq_mean, or_freq_mean),
+      ~ tidyr::replace_na(.x, 0)))
+
+summary(pg_prob_zero <- lmer(pg_prob_mean ~ WRMT_WID + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1_zero))
+
+summary(or_prob_zero <- lmer(or_prob_mean ~ WRMT_WID + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1_zero))
+
+summary(pg_freq_zero <- lmer(pg_freq_mean ~ WRMT_WID + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1_zero))
+
+summary(or_freq_zero <- lmer(or_freq_mean ~ WRMT_WID + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1_zero))
+
+library(parameters)
+standardize_parameters(pg_prob_zero)
+standardize_parameters(pg_freq_zero)
+standardize_parameters(or_prob_zero)
+standardize_parameters(or_freq_zero)
+
+library(performance)
+r2_nakagawa(pg_prob_zero)
+r2_nakagawa(pg_freq_zero)
+r2_nakagawa(or_prob_zero)
+r2_nakagawa(or_freq_zero)
+
+p.adjust(p_vals <- c(
+  summary(pg_prob_zero)$coefficients["WRMT_WID", "Pr(>|t|)"],
+  summary(pg_freq_zero)$coefficients["WRMT_WID", "Pr(>|t|)"],
+  summary(or_prob_zero)$coefficients["WRMT_WID", "Pr(>|t|)"],
+  summary(or_freq_zero)$coefficients["WRMT_WID", "Pr(>|t|)"]
+), method = "fdr")
+
+p.adjust(p_vals <- c(
+  summary(pg_prob_zero)$coefficients["length", "Pr(>|t|)"],
+  summary(pg_freq_zero)$coefficients["length", "Pr(>|t|)"],
+  summary(or_prob_zero)$coefficients["length", "Pr(>|t|)"],
+  summary(or_freq_zero)$coefficients["length", "Pr(>|t|)"]
+), method = "fdr")
+```
+
+```{r predict min sublexical measure from Word ID}
+library(lme4)
+summary(pg_prob_min_legal <- lmer(pg_prob_min ~ WRMT_WID + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+summary(or_prob_min_legal <- lmer(or_prob_min ~ WRMT_WID + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+summary(pg_freq_min_legal <- lmer(pg_freq_min ~ WRMT_WID + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+summary(or_freq_min_legal <- lmer(or_freq_min ~ WRMT_WID + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+library(parameters)
+standardize_parameters(pg_prob_min_legal)
+standardize_parameters(pg_freq_min_legal)
+standardize_parameters(or_prob_min_legal)
+standardize_parameters(or_freq_min_legal)
+
+library(performance)
+r2_nakagawa(pg_prob_min_legal)
+r2_nakagawa(pg_freq_min_legal)
+r2_nakagawa(or_prob_min_legal)
+r2_nakagawa(or_freq_min_legal)
+
+p.adjust(p_vals <- c(
+  summary(pg_prob_min_legal)$coefficients["WRMT_WID", "Pr(>|t|)"],
+  summary(pg_freq_min_legal)$coefficients["WRMT_WID", "Pr(>|t|)"],
+  summary(or_prob_min_legal)$coefficients["WRMT_WID", "Pr(>|t|)"],
+  summary(or_freq_min_legal)$coefficients["WRMT_WID", "Pr(>|t|)"]
+), method = "fdr")
+
+p.adjust(p_vals <- c(
+  summary(pg_prob_min_legal)$coefficients["length", "Pr(>|t|)"],
+  summary(pg_freq_min_legal)$coefficients["length", "Pr(>|t|)"],
+  summary(or_prob_min_legal)$coefficients["length", "Pr(>|t|)"],
+  summary(or_freq_min_legal)$coefficients["length", "Pr(>|t|)"]
+), method = "fdr")
+```
+
+```{r predict min sublexical measure from Word ID illegal = 0}
+library(lme4)
+
+# set NAs to zero
+transcriptions_long1_zero <- transcriptions_long1 %>% mutate(
+    across(c(pg_prob_min, or_prob_min, pg_freq_min, or_freq_min),
+      ~ tidyr::replace_na(.x, 0)))
+
+summary(pg_prob_min_zero <- lmer(pg_prob_min ~ WRMT_WID + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1_zero))
+
+summary(or_prob_min_zero <- lmer(or_prob_min ~ WRMT_WID + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1_zero))
+
+summary(pg_freq_min_zero <- lmer(pg_freq_min ~ WRMT_WID + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1_zero))
+
+summary(or_freq_min_zero <- lmer(or_freq_min ~ WRMT_WID + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1_zero))
+
+library(parameters)
+standardize_parameters(pg_prob_min_zero)
+standardize_parameters(pg_freq_min_zero)
+standardize_parameters(or_prob_min_zero)
+standardize_parameters(or_freq_min_zero)
+
+library(performance)
+r2_nakagawa(pg_prob_min_zero)
+r2_nakagawa(pg_freq_min_zero)
+r2_nakagawa(or_prob_min_zero)
+r2_nakagawa(or_freq_min_zero)
+
+p.adjust(p_vals <- c(
+  summary(pg_prob_min_zero)$coefficients["WRMT_WID", "Pr(>|t|)"],
+  summary(pg_freq_min_zero)$coefficients["WRMT_WID", "Pr(>|t|)"],
+  summary(or_prob_min_zero)$coefficients["WRMT_WID", "Pr(>|t|)"],
+  summary(or_freq_min_zero)$coefficients["WRMT_WID", "Pr(>|t|)"]
+), method = "fdr")
+
+p.adjust(p_vals <- c(
+  summary(pg_prob_min_zero)$coefficients["length", "Pr(>|t|)"],
+  summary(pg_freq_min_zero)$coefficients["length", "Pr(>|t|)"],
+  summary(or_prob_min_zero)$coefficients["length", "Pr(>|t|)"],
+  summary(or_freq_min_zero)$coefficients["length", "Pr(>|t|)"]
+), method = "fdr")
+```
+
+```{r predict mean sublexical measure from Word Attack}
+library(lme4)
+
+summary(pg_prob_pw_legal <- lmer(pg_prob_mean ~ WRMT_WA + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+summary(or_prob_pw_legal <- lmer(or_prob_mean ~ WRMT_WA + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+summary(pg_freq_pw_legal <- lmer(pg_freq_mean ~ WRMT_WA + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+summary(or_freq_pw_legal <- lmer(or_freq_mean ~ WRMT_WA + Age + Education + length + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+library(parameters)
+standardize_parameters(pg_prob_pw_legal)
+standardize_parameters(pg_freq_pw_legal)
+standardize_parameters(or_prob_pw_legal)
+standardize_parameters(or_freq_pw_legal)
+
+library(performance)
+r2_nakagawa(pg_prob_pw_legal)
+r2_nakagawa(pg_freq_pw_legal)
+r2_nakagawa(or_prob_pw_legal)
+r2_nakagawa(or_freq_pw_legal)
+
+p.adjust(p_vals <- c(
+  summary(pg_prob_pw_legal)$coefficients["WRMT_WA", "Pr(>|t|)"],
+  summary(pg_freq_pw_legal)$coefficients["WRMT_WA", "Pr(>|t|)"],
+  summary(or_prob_pw_legal)$coefficients["WRMT_WA", "Pr(>|t|)"],
+  summary(or_freq_pw_legal)$coefficients["WRMT_WA", "Pr(>|t|)"]
+), method = "fdr")
+
+p.adjust(p_vals <- c(
+  summary(pg_prob_pw_legal)$coefficients["length", "Pr(>|t|)"],
+  summary(pg_freq_pw_legal)$coefficients["length", "Pr(>|t|)"],
+  summary(or_prob_pw_legal)$coefficients["length", "Pr(>|t|)"],
+  summary(or_freq_pw_legal)$coefficients["length", "Pr(>|t|)"]
+), method = "fdr")
+```
+
+```{r predict mean sublexical measure from Spelling}
+library(lme4)
+summary(pg_prob_spell_legal <- lmer(pg_prob_mean ~ Age + Education + length + WJTA_SPELL + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+summary(or_prob_spell_legal <- lmer(or_prob_mean ~ Age + Education + length + WJTA_SPELL + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+summary(pg_freq_spell_legal <- lmer(pg_freq_mean ~ Age + Education + length + WJTA_SPELL + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+summary(or_freq_spell_legal <- lmer(or_freq_mean ~ Age + Education + length + WJTA_SPELL + (1 | ID) + (1 | pronunciation), data = transcriptions_long1))
+
+library(parameters)
+standardize_parameters(pg_prob_spell_legal)
+standardize_parameters(pg_freq_spell_legal)
+standardize_parameters(or_prob_spell_legal)
+standardize_parameters(or_freq_spell_legal)
+
+library(performance)
+r2_nakagawa(pg_prob_spell_legal)
+r2_nakagawa(pg_freq_spell_legal)
+r2_nakagawa(or_prob_spell_legal)
+r2_nakagawa(or_freq_spell_legal)
+
+p.adjust(p_vals <- c(
+  summary(pg_prob_spell_legal)$coefficients["WJTA_SPELL", "Pr(>|t|)"],
+  summary(pg_freq_spell_legal)$coefficients["WJTA_SPELL", "Pr(>|t|)"],
+  summary(or_prob_spell_legal)$coefficients["WJTA_SPELL", "Pr(>|t|)"],
+  summary(or_freq_spell_legal)$coefficients["WJTA_SPELL", "Pr(>|t|)"]
+), method = "fdr")
+
+p.adjust(p_vals <- c(
+  summary(pg_prob_spell_legal)$coefficients["length", "Pr(>|t|)"],
+  summary(pg_freq_spell_legal)$coefficients["length", "Pr(>|t|)"],
+  summary(or_prob_spell_legal)$coefficients["length", "Pr(>|t|)"],
+  summary(or_freq_spell_legal)$coefficients["length", "Pr(>|t|)"]
+), method = "fdr")
+```
+==========supplementary material=========
+```{r}
+sample_accuracy_lookup <- transcriptions_long1 %>%
+  distinct(pronunciation, spelling_response, sample_prob) %>%
+  group_by(pronunciation) %>%
+  arrange(desc(sample_prob), .by_group = TRUE) %>%
+  mutate(
+    sample_cum_prob_before = lag(cumsum(sample_prob), default = 0),
+
+    sample_top25_acc = if_else(sample_cum_prob_before < 0.25, 1L, 0L),
+    sample_top50_acc = if_else(sample_cum_prob_before < 0.50, 1L, 0L),
+    sample_top75_acc = if_else(sample_cum_prob_before < 0.75, 1L, 0L)
+  ) %>%
+  ungroup()
+
+transcriptions_long3 <- transcriptions_long1 %>%
+  left_join(
+    sample_accuracy_lookup,
+    by = c("pronunciation", "spelling_response", "sample_prob")
+  )
+```
+
+```{r cumulative sample models}
+summary(top25_modz <- glmer(sample_top25_acc ~ WRMT_WID_z + WRMT_WA_z + WJTA_Spelling_Raw_z + Age_z + Education_z + Length_z + (1 | pronunciation) + (1 | ID), data = transcriptions_long3_z, family = binomial))
+
+summary(top50_modz <- glmer(sample_top50_acc ~ WRMT_WID_z + WRMT_WA_z + WJTA_Spelling_Raw_z + Age_z + Education_z + Length_z + (1 | pronunciation) + (1 | ID), data = transcriptions_long3_z, family = binomial))
+
+summary(top75_modz <- glmer(sample_top75_acc ~ WRMT_WID_z + WRMT_WA_z + WJTA_Spelling_Raw_z + Age_z + Education_z + Length_z + (1 | pronunciation) + (1 | ID), data = transcriptions_long3_z, family = binomial))
+
+# fdr correction
+models <- list(
+  Top25 = top25_modz,
+  Top50 = top50_modz,
+  Top75 = top75_modz,
+  Legal = legal_sz
+)
+
+predictors <- c("WRMT_WID_z", "WRMT_WA_z", "WJTA_Spelling_Raw_z", "Age_z", "Education_z", "Length_z")
+
+p_table <- map_dfr(
+  names(models),
+  function(model_name) {
+    
+    coef_table <- summary(models[[model_name]])$coefficients
+    
+    tibble(
+      model = model_name,
+      predictor = predictors,
+      p = coef_table[predictors, "Pr(>|z|)"]
+    )
+  }
+)
+
+print(p_table <- p_table %>%
+  group_by(predictor) %>%
+  mutate(
+    q = p.adjust(p, method = "fdr")
+  ) %>%
+  ungroup())
+
+library(performance)
+lapply(models, r2)
+
+print(r2_table <- data.frame(
+  Model = names(models),
+  Marginal_R2 = sapply(
+    models,
+    function(m) r2(m)$R2_marginal
+  ),
+  Conditional_R2 = sapply(
+    models,
+    function(m) r2(m)$R2_conditional
+  )))
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+
+# Step 1: Calculate proportion correct/incorrect for each measure
+proportion_summary <- transcriptions_long3 %>%
+  dplyr::select(
+    # PG Toolkit
+    top1pg_acc,
+    top12pg_acc,
+    legalpg_acc,
+
+    # OR Toolkit
+    top1or_acc,
+    top12or_acc,
+    legalor_acc,
+
+    # Sample
+    top1s_acc,
+    top12s_acc,
+    sample_top25_acc,
+    sample_top50_acc,
+    sample_top75_acc,
+    legal_s_acc
+  ) %>%
+  summarise(
+    across(
+      everything(),
+      ~ mean(. == 1, na.rm = TRUE)
+    )
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "column",
+    values_to = "proportion_ones"
+  ) %>%
+  mutate(
+    proportion_zeros = 1 - proportion_ones
+  )
+
+# Duplicate PG and OR Legal rows for the "no position" bars
+proportion_summary <- bind_rows(
+  proportion_summary,
+
+  proportion_summary %>%
+    filter(column == "legalpg_acc") %>%
+    mutate(column = "legalpg_acc_noposition"),
+
+  proportion_summary %>%
+    filter(column == "legalor_acc") %>%
+    mutate(column = "legalor_acc_noposition")
+)
+
+# Step 2: Reshape correct/incorrect into rows
+proportion_summary_long <- proportion_summary %>%
+  pivot_longer(
+    cols = c(proportion_ones, proportion_zeros),
+    names_to = "value_type",
+    values_to = "proportion"
+  ) %>%
+  mutate(
+    value_type = recode(
+      value_type,
+      proportion_ones = "Correct",
+      proportion_zeros = "Incorrect"
+    ),
+    value_type = factor(
+      value_type,
+      levels = c("Incorrect", "Correct")
+    )
+  )
+
+# Step 3: Add measure group and scoring-definition labels
+# Step 3: Add measure group and scoring-definition labels
+
+proportion_summary_long <- proportion_summary_long %>%
+  mutate(
+    
+    # Assign each accuracy measure to a group
+    measure_group = case_when(
+      
+      column %in% c(
+        "top1pg_acc",
+        "top12pg_acc",
+        "legalpg_acc",
+        "legalpg_acc_noposition"
+      ) ~ "PG Toolkit",
+      
+      column %in% c(
+        "top1or_acc",
+        "top12or_acc",
+        "legalor_acc",
+        "legalor_acc_noposition"
+      ) ~ "OR Toolkit",
+      
+      column %in% c(
+        "top1s_acc",
+        "top12s_acc",
+        "sample_top25_acc",
+        "sample_top50_acc",
+        "sample_top75_acc",
+        "legal_s_acc"
+      ) ~ "Sample",
+      
+      TRUE ~ NA_character_
+    ),
+    
+    # Set facet order
+    measure_group = factor(
+      measure_group,
+      levels = c(
+        "PG Toolkit",
+        "OR Toolkit",
+        "Sample"
+      )
+    ),
+    
+    # Create labels for each scoring definition
+    column_label = case_when(
+      
+      column %in% c(
+        "top1pg_acc",
+        "top1or_acc",
+        "top1s_acc"
+      ) ~ "Top 1",
+      
+      column %in% c(
+        "top12pg_acc",
+        "top12or_acc",
+        "top12s_acc"
+      ) ~ "Top 2",
+      
+      column == "sample_top25_acc" ~ "Top 25%",
+      column == "sample_top50_acc" ~ "Top 50%",
+      column == "sample_top75_acc" ~ "Top 75%",
+      
+      column %in% c(
+        "legalpg_acc",
+        "legalor_acc"
+      ) ~ "Legal (Positional)",
+      
+      column %in% c(
+        "legalpg_acc_noposition",
+        "legalor_acc_noposition"
+      ) ~ "Legal (Non-Positional)",
+      
+      column == "legal_s_acc" ~ "Legal",
+      
+      TRUE ~ NA_character_
+    ),
+    
+    # Set order of scoring definitions
+    column_label = factor(
+      column_label,
+      levels = c(
+        "Top 1",
+        "Top 2",
+        "Top 25%",
+        "Top 50%",
+        "Top 75%",
+        "Legal",
+        "Legal (Positional)",
+        "Legal (Non-Positional)"
+      )
+    )
+  )
+
+
+# Step 4: Plot
+
+plot_acc_all <- ggplot(
+  proportion_summary_long,
+  aes(
+    x = column_label,
+    y = proportion,
+    fill = value_type
+  )
+) +
+  geom_bar(
+    stat = "identity",
+    position = "stack",
+    alpha = 0.8
+  ) +
+  labs(
+    title = "Proportion of Spelling Accuracy by Measure",
+    x = "Accuracy Threshold",
+    y = "Proportion of Spelling Accuracy",
+    fill = "Accuracy"
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Incorrect" = "hotpink",
+      "Correct" = "chartreuse3"
+    )
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    labels = scales::percent_format(accuracy = 1)
+  ) +
+  facet_grid(
+    . ~ measure_group,
+    scales = "free_x",
+    space = "free"
+  ) +
+  geom_text(
+    data = subset(
+      proportion_summary_long,
+      value_type == "Correct"
+    ),
+    aes(
+      label = scales::percent(
+        proportion,
+        accuracy = 0.1
+      )
+    ),
+    vjust = -0.5,
+    color = "black",
+    size = 5
+  ) +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      size = 16
+    ),
+    axis.text.y = element_text(
+      size = 16
+    ),
+    axis.title.x = element_text(
+      size = 16
+    ),
+    axis.title.y = element_text(
+      size = 16
+    ),
+    plot.title = element_text(
+      size = 20,
+      hjust = 0.5,
+      face = "bold"
+    ),
+    legend.title = element_text(
+      size = 16
+    ),
+    legend.text = element_text(
+      size = 16
+    ),
+    strip.text.x = element_text(
+      size = 16,
+      face = "bold"
+    )
+  )
+
+print(plot_acc_all)
+
+
+# Save plot
+
+ggsave(
+  "plot_acc_all.png",
+  plot = plot_acc_all,
+  width = 14,
+  height = 8,
+  dpi = 300
+)
+```
+
+```{r correlation between all predictor variables for models}
+library(dplyr)
+library(ppcor)
+
+vars_of_interest <- df_avg %>%
+  dplyr::select(
+    WRMT_WID, WRMT_WA, WJTA_SPELL, age, education,
+    pg_prob_mean_avg, or_prob_mean_avg,
+    pg_freq_mean_avg, or_freq_mean_avg
+  )
+
+vars_clean <- vars_of_interest %>%
+  tidyr::drop_na() %>%
+  dplyr::rename(
+    "WRMT Word ID"        = WRMT_WID,
+    "WRMT Word Attack"   = WRMT_WA,
+    "WJTA Spelling"= WJTA_SPELL,
+    "Age"    = age,
+    "Education"    = education,
+    "PG Consistency" = pg_prob_mean_avg,
+    "OR Consistency" = or_prob_mean_avg,
+    "PG Frequency"   = pg_freq_mean_avg,
+    "OR Frequency"   = or_freq_mean_avg
+  )
+
+
+cor_mat <- cor(vars_clean, use = "pairwise.complete.obs", method = "pearson")
+round(cor_mat, 3)
+
+# If you want Spearman (robust to nonlinearity / ranks)
+cor_mat_s <- cor(vars_clean, use = "pairwise.complete.obs", method = "spearman")
+round(cor_mat_s, 3)
+
+# Partial correlations controlling for Education and WRMT_WA
+pc <- ppcor::pcor(vars_clean, method = "pearson")  # all partialled against the rest
+round(pc$estimate, 3)
+round(pc$p.value, 3)
+
+X <- vars_clean %>%
+  dplyr::select(
+   "PG Consistency", "OR Consistency", "PG Frequency", "OR Frequency", "Education", "WJTA Spelling", "WRMT Word Attack"
+  )
+
+pp <- ppcor::pcor(X, method = "pearson")
+round(pp$estimate, 3)
+
+library(reshape2)
+library(ggplot2)
+
+m <- melt(round(cor_mat, 2))
+
+# Keep only upper triangle to avoid mirrored side
+m_upper <- m %>%
+  filter(as.numeric(Var1) < as.numeric(Var2))
+
+print(corrmat <- ggplot(m_upper, aes(Var2, Var1, fill = value)) +   # swap Var1 and Var2
+  geom_tile() +
+  geom_text(aes(label = value)) +
+  scale_fill_gradient2(low="deepskyblue", mid="white", high="hotpink",
+                       midpoint=0, limits=c(-1,1)) +
+  theme_minimal(base_size=14) +
+  theme(
+    axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+    panel.grid = element_blank()
+  ) +
+  coord_fixed() +
+  labs(x="", y="", fill="r"))
+
+ggsave("ntr_pw_spell_corrmat.png", plot = corrmat, width = 8, height = 8, dpi = 300)
+```
+
+```{r PG partial correlations with reading}
+library(ppcor)
+
+# PG CONSISTENCY
+df_sub <- df_avg[, c(
+  "pg_prob_mean_avg",  # variable 1
+  "WRMT_WID",               # variable 2
+  "education",
+  "age",
+  "WRMT_WA",
+  "WJTA_SPELL"
+)]
+# Keep only rows that are complete for at least the variables being tested
+df_sub_complete <- df_sub[complete.cases(df_sub[, c("pg_prob_mean_avg", "WRMT_WID")]), ]
+# Optional: keep only complete cases for control variables too
+df_sub_complete <- df_sub_complete[complete.cases(df_sub_complete), ]
+# Run partial correlation
+pcor_res <- pcor(df_sub_complete, method = "pearson")
+pcor_res$estimate[1,2]
+pcor_res$p.value[1,2]
+
+# PG FREQUENCY
+df_sub <- df_avg[, c(
+  "pg_freq_mean_avg", # variable 1
+  "WRMT_WID",               # variable 2
+  "education",
+  "age",
+  "WRMT_WA",
+  "WJTA_SPELL"
+)]
+
+df_sub_complete <- df_sub[complete.cases(df_sub[, c("pg_freq_mean_avg", "WRMT_WID")]), ]
+df_sub_complete <- df_sub_complete[complete.cases(df_sub_complete), ]
+pcor_res <- pcor(df_sub_complete, method = "pearson")
+pcor_res$estimate[1,2]
+pcor_res$p.value[1,2]
+
+
+# OR CONSISTENCY
+df_sub <- df_avg[, c(
+  "or_prob_mean_avg",  # variable 1
+  "WRMT_WID",               # variable 2
+  "education",
+  "age",
+  "WRMT_WA",
+  "WJTA_SPELL"
+)]
+df_sub_complete <- df_sub[complete.cases(df_sub[, c("or_prob_mean_avg", "WRMT_WID")]), ]
+df_sub_complete <- df_sub_complete[complete.cases(df_sub_complete), ]
+pcor_res <- pcor(df_sub_complete, method = "pearson")
+pcor_res$estimate[1,2]
+pcor_res$p.value[1,2]
+
+# OR FREQUENCY
+df_sub <- df_avg[, c(
+  "or_freq_mean_avg", # variable 1
+  "WRMT_WID",               # variable 2
+  "education",
+  "age",
+  "WRMT_WA",
+  "WJTA_SPELL"
+)]
+df_sub_complete <- df_sub[complete.cases(df_sub[, c("or_freq_mean_avg", "WRMT_WID")]), ]
+df_sub_complete <- df_sub_complete[complete.cases(df_sub_complete), ]
+pcor_res <- pcor(df_sub_complete, method = "pearson")
+pcor_res$estimate[1,2]
+pcor_res$p.value[1,2]
+```
+
+```{r partial correlation plots}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(broom)
+
+# Remove rows where ID is "NTR0265"
+df_avg_ex <- df_avg %>%
+  filter(!ID %in% c("NTR0265", "NTR0427"))
+
+
+
+# ----------------------------
+# 1. Start with participant-level dataframe
+# ----------------------------
+df_part <- df_avg %>%
+  dplyr::rename(
+    pg_prob = pg_prob_mean_avg,
+    or_prob = or_prob_mean_avg,
+    pg_freq = pg_freq_mean_avg,
+    or_freq = or_freq_mean_avg
+  ) %>%
+  tidyr::drop_na(
+    pg_prob,
+    or_prob,
+    pg_freq,
+    or_freq,
+    education,
+    age,
+    WRMT_WA,
+    WJTA_SPELL,
+    WRMT_WID,
+    WID_group
+  )
+
+# ----------------------------
+# 2. Residualize each DV for covariates
+#    WRMT_WID is intentionally NOT included
+# ----------------------------
+df_part <- df_part %>%
+  dplyr::mutate(
+    PG_Cons_resid = resid(
+      lm(pg_prob ~ education + age, data = .)
+    ),
+    
+    OR_Cons_resid = resid(
+      lm(or_prob ~ education + age, data = .)
+    ),
+    
+    PG_Freq_resid = resid(
+      lm(pg_freq ~ education + age, data = .)
+    ),
+    
+    OR_Freq_resid = resid(
+      lm(or_freq ~ education + age, data = .)
+    )
+  )
+
+# ----------------------------
+# 3. Reshape to long format
+# ----------------------------
+df_long <- df_part %>%
+  dplyr::select(
+    ID,
+    WID_group,
+    WRMT_WA,
+    PG_Cons_resid,
+    OR_Cons_resid,
+    PG_Freq_resid,
+    OR_Freq_resid
+  ) %>%
+  tidyr::pivot_longer(
+    cols = c(
+      PG_Cons_resid,
+      OR_Cons_resid,
+      PG_Freq_resid,
+      OR_Freq_resid
+    ),
+    names_to = "Measure",
+    values_to = "Value"
+  ) %>%
+  dplyr::mutate(
+    Measure = factor(
+      Measure,
+      levels = c(
+        "PG_Cons_resid",
+        "OR_Cons_resid",
+        "PG_Freq_resid",
+        "OR_Freq_resid"
+      ),
+      labels = c(
+        "Mean PG Consistency",
+        "Mean OR Consistency",
+        "Mean PG Frequency",
+        "Mean OR Frequency"
+      )
+    ),
+    
+    WID_group = factor(
+      WID_group,
+      levels = c(1, 2, 3),
+      labels = c("High", "Average", "Low")
+    )
+  )
+
+cor_stats <- df_long %>%
+  dplyr::group_by(Measure) %>%
+  dplyr::summarize(
+    test = list(stats::cor.test(WRMT_WA, Value, method = "pearson")),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    r = purrr::map_dbl(test, ~ unname(.x$estimate)),
+    p = purrr::map_dbl(test, ~ .x$p.value),
+    label = paste0(
+      "r = ", sprintf("%.2f", r),
+      "\n",
+      "p ", dplyr::if_else(
+        p < .001,
+        "< .001",
+        paste0("= ", sprintf("%.3f", p))
+      )
+    )
+  )
+
+# ----------------------------
+# 4. Plot
+# ----------------------------
+print(plot_partial_WA <- ggplot(
+  df_long,
+  aes(x = WRMT_WA, y = Value, color = WID_group)
+) +
+  geom_point(alpha = 0.7, size = 2) +
+  
+  geom_smooth(
+    aes(group = 1),
+    method = "lm",
+    formula = y ~ x,
+    se = TRUE,
+    color = "gray40"
+  ) +
+  
+  geom_text(
+    data = cor_stats,
+    aes(
+      x = Inf,
+      y = -Inf,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    hjust = 1.1,
+    vjust = -0.5,
+    size = 5
+  ) +
+  
+  facet_wrap(~ Measure, ncol = 2, scales = "free_y") +
+  
+  scale_color_manual(
+    values = c(
+      "High" = "deepskyblue",
+      "Average" = "chartreuse3",
+      "Low" = "hotpink"
+    )
+  ) +
+  
+  labs(
+    x = "Word Attack Score",
+    y = "Residualized Toolkit Measure",
+    color = "Reading Skill Group",
+    title = "Relationship Between Pseudoword Reading Skill and Mean Toolkit Measures (Illegal = NA)"
+  ) +
+  
+  theme_minimal(base_size = 16) +
+  
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(
+      hjust = 0.5,
+      size = 18,
+      face = "bold"
+    ),
+    strip.text = element_text(
+      size = 16,
+      face = "bold"
+    ),
+    legend.title = element_text(size = 16),
+    legend.text = element_text(size = 16),
+    panel.spacing = unit(1.2, "lines")
+  ))
+
+ggsave("plot_partial_legal_WA.png", plot = plot_partial_min, width = 12, height = 10, dpi = 300)
+```
+
+
+
