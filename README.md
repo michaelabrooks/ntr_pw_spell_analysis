@@ -8,7 +8,7 @@ The analyses examine pseudoword spelling accuracy under corpus- and sample-based
 
 | File | Contents |
 | --- | --- |
-| [`ntr_pw_spell_9-24-26.Rmd`](ntr_pw_spell_9-24-26.Rmd) | R Markdown analysis code, including data preparation, mixed-effects models, and figures. |
+| [`pseudoword_spelling_analysis.Rmd`](pseudoword_spelling_analysis.Rmd) | R Markdown analysis code, including data preparation, mixed-effects models, and figures. |
 | [`ntr_pw_spell_data_final.xlsx`](ntr_pw_spell_data_final.xlsx) | Source workbook with pseudoword spelling responses, participant characteristics, assessment scores, and additional worksheets. |
 
 ## Data
@@ -40,6 +40,27 @@ Among the 79 response participants, one education value and one spelling raw sco
 
 The workbook also includes race, ethnicity, education category, number of languages spoken, and a WASI score. Derived Toolkit estimates and scoring variables are calculated by the R code rather than stored as a complete trial-level analysis dataset in the workbook.
 
+## Code organization and naming
+
+The analysis file is now named `pseudoword_spelling_analysis.Rmd`. Names describe the content and level of each object rather than successive numbered versions.
+
+| Previous name | Current name | Contents |
+| --- | --- | --- |
+| `transcriptions` | `spelling_responses_wide` | Imported response columns. |
+| `transcriptions_long` | `spelling_trials` | Participant-by-item rows with demographics and Toolkit measures. |
+| `transcriptions_long1` | `spelling_accuracy_trials` | Trials with accuracy scores. |
+| `transcriptions_long1_z` | `spelling_accuracy_standardized` | Accuracy trials with standardized predictors. |
+| `transcriptions_long2` | `spelling_agreement_trials` | Trials with reading groups and entropy. |
+| `transcriptions_long2_idio` | `idiosyncratic_spelling_trials` | Trial-level singleton flags. |
+| `transcriptions_long3` | `cumulative_accuracy_trials` | Trials with cumulative sample accuracy scores. |
+| `df_avg` | `participant_spelling_summary` | Participant-level averages. |
+| `df_avg_zero` | `participant_spelling_summary_zero_coded` | Participant averages under the original zero-coding approach. |
+| `df_entropy` | `item_group_entropy` | Entropy by pronunciation and reading group. |
+
+Derived measure names also describe their meaning: `pg_top1_accuracy`, `sample_legal_accuracy`, `pg_consistency_mean`, and `or_frequency_min`. Standardized predictors are named `word_reading_standardized`, `pseudoword_reading_standardized`, `word_spelling_standardized`, `age_standardized`, `education_standardized`, and `stimulus_length_standardized`.
+
+Model objects begin with `model_` (for example, `model_accuracy_pg_top1`); figures begin with `plot_`. Comparisons and partial-correlation plots use separate named dataframes rather than reusing `df_long`. Original workbook headers and exported figure filenames are preserved. Statistical specifications, scoring calculations, filters, standardization, and correction methods are unchanged.
+
 ## Software and external files
 
 Use R with RStudio or another R Markdown-capable environment. The exact R and package versions used for the original analyses are not recorded in this repository.
@@ -68,7 +89,7 @@ The analysis explicitly loads version 2.0 files. A newer Toolkit version has not
 ## Running the analysis
 
 1. Clone or download this repository and set its folder as the working directory in RStudio.
-2. Open `ntr_pw_spell_9-24-26.Rmd`. The default data file is `ntr_pw_spell_data_final.xlsx` in that same folder.
+2. Open `pseudoword_spelling_analysis.Rmd`. The default data file is `ntr_pw_spell_data_final.xlsx` in that same folder.
 3. Obtain the external Toolkit and converter files. Put them in a local `toolkit/` subfolder, or set their paths before running the first chunk:
 
 ```r
@@ -83,18 +104,18 @@ Sys.setenv(
    Defaults are `ntr_pw_spell_data_final.xlsx`, `toolkit/Toolkit_v2.0.RData`, and `toolkit/Transcription_Converter.R`. Both Toolkit loads use the same configured path.
 4. Install the packages above. The first chunk now attaches `purrr` explicitly for `map_chr()`. Its join validation uses a recent version of dplyr supporting `relationship = "many-to-one"`.
 5. Run chunks in order from a fresh R session. The import checks the workbook sheets and demographic columns, rejects duplicate or unmatched demographic IDs, and reports missing covariates. Responses are lowercased, whitespace is removed, pronunciations are converted, and wide responses are reshaped and joined to demographics. The extra demographic record does not enter the response sample.
-6. Inspect the limitations below before knitting the entire document. Figures saved with relative paths are written to the active working directory. Once the unresolved objects are addressed, render using RStudio's Knit command or `rmarkdown::render("ntr_pw_spell_9-24-26.Rmd")`.
+6. Inspect the limitations below before knitting the entire document. Figures saved with relative paths are written to the active working directory. Once the unresolved objects are addressed, render using RStudio's Knit command or `rmarkdown::render("pseudoword_spelling_analysis.Rmd")`.
 
 ## Current reproducibility limitations
 
-Uploading the source workbook does not by itself make this analysis fully self-contained. This update switches the imports to the cleaned two-sheet workbook, configures file paths, attaches purrr, and adds participant-join and missing-covariate checks. Statistical models and scoring logic are unchanged. Workbook structure, response counts, participant matching, and equivalence with the prior analysis sheets were checked. A complete clean-session R run has not been performed; R and the external Toolkit files were unavailable in the editing environment.
+Uploading the source workbook does not by itself make this analysis fully self-contained. This update switches the imports to the cleaned two-sheet workbook, configures file paths, attaches purrr, and adds participant-join and missing-covariate checks. Statistical models and scoring logic are unchanged. Workbook structure, response counts, participant matching, and equivalence with the prior analysis sheets were checked. The naming pass checked all 24 R chunks for consistent renamed references, balanced delimiters, preserved model/scoring call counts, and unchanged exported filenames. A complete clean-session R run has not been performed; R and the external Toolkit files were unavailable in the editing environment.
 
-Static inspection identified existing issues that need resolving before an uninterrupted render:
+The naming cleanup also corrects inconsistent legal-spelling plot names, PG/OR legal-accuracy column references, and the final Word Attack plot export reference. Remaining issues identified by static inspection:
 
-- The legal-spelling plotting chunk constructs `plot_df_wide_nopos` but uses `plot_df_wide` and differently named columns/plot objects later in the same chunk.
-- The cumulative sample models refer to `transcriptions_long3_z`, which is not created in the current document.
-- The final Word Attack figure is assigned to `plot_partial_WA`, while its `ggsave()` call refers to `plot_partial_min`.
+- The cumulative sample models refer to `cumulative_accuracy_standardized` (formerly `transcriptions_long3_z`), which is not created in the current document.
 - In the supplementary accuracy plot, non-positional legal bars are created by duplicating positional accuracy values; they are not independently calculated non-positional estimates in that plotting chunk.
+
+- The agreement section's Poisson model uses the number of distinct spellings per item and group, although its plot title refers to idiosyncratic spellings. The model is now named `model_unique_spellings_by_reading_group` to reflect its actual outcome; the original formula, outcome, and plot label have not been changed.
 
 These observations are not a full statistical or code audit. External files and their versions must also be available to reproduce the reported results.
 
