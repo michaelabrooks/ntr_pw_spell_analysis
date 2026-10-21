@@ -1,4 +1,4 @@
-# Pseudoword spelling analysis
+# Data and Analysis Code for Literacy Skill Shapes Pseudoword Spelling Accuracy and Agreement Across Sublexical Grain Sizes
 
 Data and R analysis code associated with the manuscript **Literacy Skill Shapes Pseudoword Spelling Accuracy and Agreement Across Sublexical Grain Sizes**.
 
