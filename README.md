@@ -9,16 +9,18 @@ The analyses examine pseudoword spelling accuracy under corpus- and sample-based
 | File | Contents |
 | --- | --- |
 | [`ntr_pw_spell_9-24-26.Rmd`](ntr_pw_spell_9-24-26.Rmd) | R Markdown analysis code, including data preparation, mixed-effects models, and figures. |
-| [`ntr_pw_spell_data.xlsx`](ntr_pw_spell_data.xlsx) | Source workbook with pseudoword spelling responses, participant characteristics, assessment scores, and additional worksheets. |
+| [`ntr_pw_spell_data_final.xlsx`](ntr_pw_spell_data_final.xlsx) | Source workbook with pseudoword spelling responses, participant characteristics, assessment scores, and additional worksheets. |
 
 ## Data
 
-The analysis imports **Trans_exc_up** and **Demographics** from the workbook.
+The analysis imports **Spellings** and **Demographics** from the workbook.
 
-- **Trans_exc_up:** 80 stimulus rows and 79 participant columns. The first two columns are `target_spelling` and `pronunciation`; the remaining column headers are coded participant IDs. Each participant cell contains a spelling response or is blank. There are 5,836 nonblank responses out of 6,320 possible participant-by-item observations; 484 cells are blank. Blank cells are not spelling responses and should not be converted to zero-valued responses.
+- **Spellings:** 80 stimulus rows and 79 participant columns. The first two columns are `target_spelling` and `pronunciation`; the remaining column headers are coded participant IDs. Each participant cell contains a spelling response or is blank. There are 5,836 nonblank responses out of 6,320 possible participant-by-item observations; 484 cells are blank. Blank cells are not spelling responses and should not be converted to zero-valued responses.
 - **Demographics:** participant-level characteristics and literacy/assessment scores, joined to responses using `ID`. All 79 response-column IDs have matching demographic records. This worksheet also contains one additional record without a matching response column; the response-to-demographics left join does not add that participant to the analysis.
 
-The supplied workbook is retained without changing its contents. It also contains the earlier response worksheets `Transcriptions`, `Transcriptions_exc`, and `Trans_up`; the broader `Data_Management_Demographics` worksheet; and a `Probability` worksheet. These additional worksheets are not imported by the current R Markdown analysis. They should not be combined with `Trans_exc_up` as additional trials. Some worksheets contain formatted empty rows below the data.
+The cleaned workbook contains only `Spellings` and `Demographics`. It replaces the earlier seven-sheet workbook in the current repository. Its spelling and demographic values match the corresponding analysis sheets in that earlier workbook; the response worksheet has been renamed to `Spellings`. The supplied cleaned workbook is uploaded without altering its contents.
+
+Among the 79 response participants, one education value and one spelling raw score are missing. The missing values are preserved, not imputed. Models may omit records with missing predictors, so their participant and trial counts can differ. The import reports these counts in `missing_covariates`. Other demographic/assessment fields also contain missing values.
 
 ### Variables used in the analysis
 
@@ -65,16 +67,27 @@ The analysis explicitly loads version 2.0 files. A newer Toolkit version has not
 
 ## Running the analysis
 
-1. Clone or download this repository and open `ntr_pw_spell_9-24-26.Rmd` in RStudio.
-2. Obtain the external Toolkit and transcription-converter files described above.
-3. Update the file paths in the R Markdown document. The existing code reads the workbook from `~/Documents/ntr_pw_spell_data.xlsx` in two places and loads external files from `~/Downloads/`. If running from the repository folder, change the workbook paths to `"ntr_pw_spell_data.xlsx"`; update both occurrences of the Toolkit `load()` path and the converter `source()` path to the files on your computer.
-4. Load `purrr` before running the first chunk (`library(purrr)`), because it uses `map_chr()` without attaching that package there.
-5. Run chunks in order, starting from a fresh R session. Responses are lowercased, whitespace is removed, pronunciations are converted to the Toolkit's internal notation, and the wide responses are reshaped and joined to demographics. Subsequent chunks compute Toolkit measures, accuracy definitions, models, and figures.
+1. Clone or download this repository and set its folder as the working directory in RStudio.
+2. Open `ntr_pw_spell_9-24-26.Rmd`. The default data file is `ntr_pw_spell_data_final.xlsx` in that same folder.
+3. Obtain the external Toolkit and converter files. Put them in a local `toolkit/` subfolder, or set their paths before running the first chunk:
+
+```r
+# Optional overrides; use the actual locations on your computer.
+Sys.setenv(
+  NTR_DATA_PATH = "/path/to/ntr_pw_spell_data_final.xlsx",
+  NTR_TOOLKIT_PATH = "/path/to/Toolkit_v2.0.RData",
+  NTR_CONVERTER_PATH = "/path/to/Transcription_Converter.R"
+)
+```
+
+   Defaults are `ntr_pw_spell_data_final.xlsx`, `toolkit/Toolkit_v2.0.RData`, and `toolkit/Transcription_Converter.R`. Both Toolkit loads use the same configured path.
+4. Install the packages above. The first chunk now attaches `purrr` explicitly for `map_chr()`. Its join validation uses a recent version of dplyr supporting `relationship = "many-to-one"`.
+5. Run chunks in order from a fresh R session. The import checks the workbook sheets and demographic columns, rejects duplicate or unmatched demographic IDs, and reports missing covariates. Responses are lowercased, whitespace is removed, pronunciations are converted, and wide responses are reshaped and joined to demographics. The extra demographic record does not enter the response sample.
 6. Inspect the limitations below before knitting the entire document. Figures saved with relative paths are written to the active working directory. Once the unresolved objects are addressed, render using RStudio's Knit command or `rmarkdown::render("ntr_pw_spell_9-24-26.Rmd")`.
 
 ## Current reproducibility limitations
 
-Uploading the source workbook does not by itself make this analysis fully self-contained. This update adds the workbook and documentation; it does not revise or validate the statistical code. A complete clean-session run has not been performed.
+Uploading the source workbook does not by itself make this analysis fully self-contained. This update switches the imports to the cleaned two-sheet workbook, configures file paths, attaches purrr, and adds participant-join and missing-covariate checks. Statistical models and scoring logic are unchanged. Workbook structure, response counts, participant matching, and equivalence with the prior analysis sheets were checked. A complete clean-session R run has not been performed; R and the external Toolkit files were unavailable in the editing environment.
 
 Static inspection identified existing issues that need resolving before an uninterrupted render:
 

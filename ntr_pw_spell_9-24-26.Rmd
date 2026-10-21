@@ -19,24 +19,70 @@ library(lmerTest)
 library(corrplot)
 library(ggcorrplot)
 library(patchwork)
+library(purrr)
 
-# Toolkit data
-load("~/Downloads/Toolkit_v2.0.RData")
-source("~/Downloads/Transcription_Converter.R")
+# Run with the repository folder as the working directory.
+# Override these paths with Sys.setenv(...) when files are stored elsewhere.
+data_path <- Sys.getenv("NTR_DATA_PATH", "ntr_pw_spell_data_final.xlsx")
+toolkit_path <- Sys.getenv("NTR_TOOLKIT_PATH", "toolkit/Toolkit_v2.0.RData")
+converter_path <- Sys.getenv("NTR_CONVERTER_PATH", "toolkit/Transcription_Converter.R")
+
+if (!file.exists(data_path)) {
+  stop("Workbook not found: ", data_path,
+       ". Set the working directory to the repository or set NTR_DATA_PATH.")
+}
+required_sheets <- c("Spellings", "Demographics")
+missing_sheets <- setdiff(required_sheets, readxl::excel_sheets(data_path))
+if (length(missing_sheets)) {
+  stop("Missing workbook sheets: ", paste(missing_sheets, collapse = ", "))
+}
+
+# Toolkit data and converter are external dependencies, not included here.
+for (path in c(toolkit_path, converter_path)) {
+  if (!file.exists(path)) stop("Required external file not found: ", path)
+}
+load(toolkit_path)
+source(converter_path)
 
 # Transcriptions
 transcriptions <- read_excel(
-  "~/Documents/ntr_pw_spell_data.xlsx", sheet = "Trans_exc_up") %>% mutate(across(where(is.character), ~ .x %>% str_to_lower() %>% str_replace_all("\\s+", ""))) %>%
+  data_path, sheet = "Spellings") %>% mutate(across(where(is.character), ~ .x %>% str_to_lower() %>% str_replace_all("\\s+", ""))) %>%
   mutate(inhouse = map_chr(pronunciation, ipa_to_inhouse), .after = pronunciation) %>%
   mutate(length = str_length(inhouse), .after = inhouse)
 
 transcriptions_long <- transcriptions %>% pivot_longer(cols = -c(target_spelling, pronunciation, inhouse, length), names_to = "ID", values_to = "spelling_response")
 
 # Read demographics sheet
-demographics <- read_excel("~/Documents/ntr_pw_spell_data.xlsx", sheet = "Demographics")
+demographics <- read_excel(data_path, sheet = "Demographics")
 
+# Verify the participant join rather than silently accepting duplicate/missing IDs.
+required_demo_columns <- c("ID", "Age", "Sex", "Education", "WRMT_WID",
+                           "WRMT_WA", "WRMT_BSC", "WJTA_SPELL")
+missing_columns <- setdiff(required_demo_columns, names(demographics))
+if (length(missing_columns)) {
+  stop("Missing demographic columns: ", paste(missing_columns, collapse = ", "))
+}
+if (anyNA(demographics$ID) || anyDuplicated(demographics$ID)) {
+  stop("Demographic IDs must be nonmissing and unique.")
+}
+response_ids <- unique(transcriptions_long$ID)
+missing_ids <- setdiff(response_ids, demographics$ID)
+if (length(missing_ids)) {
+  stop("Participants without demographic records: ", paste(missing_ids, collapse = ", "))
+}
+# Retain the response sample; extra demographic rows do not add participants.
 transcriptions_long <- transcriptions_long %>%
-  left_join(demographics, by = "ID")
+  left_join(demographics, by = "ID", relationship = "many-to-one")
+
+message("Imported ", length(response_ids), " participants from ", data_path)
+# Preserve missing covariates; do not impute values or recode them as zero.
+missing_covariates <- transcriptions_long %>%
+  distinct(ID, .keep_all = TRUE) %>%
+  summarise(across(c(Age, Education, WRMT_WID, WRMT_WA, WJTA_SPELL),
+                   ~ sum(is.na(.x))))
+if (any(unlist(missing_covariates) > 0)) {
+  warning("Missing participant covariates remain; model sample sizes may differ. See missing_covariates.")
+}
 ```
 
 ```{r run participant responses through toolkit}
@@ -82,7 +128,7 @@ transcriptions_long <- transcriptions_long %>%
 
 ```{r get # of legal spellings}
 # load old toolkit until new pw spell function is updated
-load("~/Downloads/Toolkit_v2.0.RData")
+load(toolkit_path)
 
 # get unique prons in stimuli
 prons <- unique(transcriptions_long$inhouse)
@@ -2065,6 +2111,7 @@ print(plot_partial_WA <- ggplot(
 
 ggsave("plot_partial_legal_WA.png", plot = plot_partial_min, width = 12, height = 10, dpi = 300)
 ```
+
 
 
 
